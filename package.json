@@ -1,0 +1,12 @@
+{
+  "name": "timely-api",
+  "version": "1.0.0",
+  "description": "API functions for Timely",
+  "main": "index.js",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0"
+  },
+  "scripts": {
+    "test": "echo 'API ready'"
+  }
+}
