@@ -21,6 +21,7 @@ module.exports = async function handler(req, res) {
     ];
     const corsOrigin = allowedOrigins.includes(origin) ? origin : '*';
     setCors(res, corsOrigin);
+    res.setHeader('Content-Type', 'application/json');
 
     if (req.method === 'OPTIONS') {
       return res.status(204).end();
@@ -46,42 +47,26 @@ module.exports = async function handler(req, res) {
       return res.status(400).json({ error: 'Missing email or password' });
     }
 
-    // Prefer a direct GoTrue admin email search (more reliable than listUsers pagination)
+    // Query GoTrue admin API directly by email (no DB/pagination dependency)
     let foundUser = null;
-    try {
-      const url = `${SUPABASE_URL}/auth/v1/admin/users?email=${encodeURIComponent(normalizedEmail)}`;
-      const r = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'apikey': SUPABASE_SERVICE_ROLE_KEY,
-          'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-          'Content-Type': 'application/json'
-        }
-      });
-      if (r.ok) {
-        const users = await r.json();
-        if (Array.isArray(users) && users.length > 0) {
-          foundUser = users.find(u => (u.email || '').toLowerCase() === normalizedEmail) || users[0];
-        }
-      } else {
-        // Fall back to listUsers if the admin endpoint returns an error
-        // but don't fail the request purely due to this
+    const url = `${SUPABASE_URL}/auth/v1/admin/users?email=${encodeURIComponent(normalizedEmail)}`;
+    const r = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'apikey': SUPABASE_SERVICE_ROLE_KEY,
+        'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        'Content-Type': 'application/json'
       }
-    } catch (_) {}
+    });
 
-    // Fallback: listUsers pagination (in case admin query above isn't available)
-    if (!foundUser) {
-      let page = 1;
-      const perPage = 1000;
-      while (!foundUser && page <= 10) {
-        const { data: list, error: listErr } = await supabase.auth.admin.listUsers({ page, perPage });
-        if (listErr) {
-          return res.status(500).json({ error: listErr.message });
-        }
-        foundUser = (list.users || []).find(u => (u.email || '').toLowerCase() === normalizedEmail);
-        if (foundUser || (list.users || []).length < perPage) break;
-        page += 1;
-      }
+    if (!r.ok) {
+      const text = await r.text().catch(() => '');
+      return res.status(500).json({ error: 'gotrue_query_failed', details: text || r.statusText });
+    }
+
+    const users = await r.json();
+    if (Array.isArray(users) && users.length > 0) {
+      foundUser = users.find(u => (u.email || '').toLowerCase() === normalizedEmail) || users[0];
     }
 
     if (!foundUser) {
