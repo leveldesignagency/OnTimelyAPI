@@ -47,38 +47,51 @@ module.exports = async function handler(req, res) {
       return res.status(400).json({ error: 'Missing email or password' });
     }
 
-    // Query GoTrue admin API directly by email (no DB/pagination dependency)
+    // Primary strategy: get auth_user_id from our DB then update by ID (most reliable)
     let foundUser = null;
-    const url = `${SUPABASE_URL}/auth/v1/admin/users?email=${encodeURIComponent(normalizedEmail)}`;
-    const r = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'apikey': SUPABASE_SERVICE_ROLE_KEY,
-        'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-        'Content-Type': 'application/json'
+    let authUserId = null;
+    const { data: guestRow, error: guestErr } = await supabase
+      .from('guests')
+      .select('auth_guest_user_id')
+      .eq('email', normalizedEmail)
+      .maybeSingle();
+
+    if (guestErr) {
+      // If DB lookup fails, fall back to GoTrue email query
+    } else if (guestRow && guestRow.auth_guest_user_id) {
+      authUserId = guestRow.auth_guest_user_id;
+    } else {
+      // Fallback: query GoTrue admin API directly by email
+      const url = `${SUPABASE_URL}/auth/v1/admin/users?email=${encodeURIComponent(normalizedEmail)}`;
+      const r = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'apikey': SUPABASE_SERVICE_ROLE_KEY,
+          'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        return res.status(500).json({ error: 'gotrue_query_failed', details: text || r.statusText });
       }
-    });
-
-    if (!r.ok) {
-      const text = await r.text().catch(() => '');
-      return res.status(500).json({ error: 'gotrue_query_failed', details: text || r.statusText });
+      const users = await r.json();
+      if (Array.isArray(users) && users.length > 0) {
+        foundUser = users.find(u => (u.email || '').toLowerCase() === normalizedEmail) || users[0];
+        authUserId = foundUser?.id || null;
+      }
     }
 
-    const users = await r.json();
-    if (Array.isArray(users) && users.length > 0) {
-      foundUser = users.find(u => (u.email || '').toLowerCase() === normalizedEmail) || users[0];
-    }
-
-    if (!foundUser) {
+    if (!authUserId) {
       return res.status(404).json({ error: 'user_not_found' });
     }
 
-    const { error: updErr } = await supabase.auth.admin.updateUserById(foundUser.id, { password });
+    const { error: updErr } = await supabase.auth.admin.updateUserById(authUserId, { password });
     if (updErr) {
       return res.status(500).json({ error: updErr.message });
     }
 
-    return res.status(200).json({ auth_user_id: foundUser.id });
+    return res.status(200).json({ auth_user_id: authUserId });
   } catch (e) {
     return res.status(500).json({ error: 'Internal server error' });
   }
